@@ -1,0 +1,181 @@
+
+SELECT 
+	table1.RepID,
+	Rehire,
+	table2.SMFlag,
+	SUM(Hours) AS Hours,
+	SUM(NetPostpaid) AS NetPostpaid,
+	SUM(NetPrepaidACTs) AS NetPrepaidACTs,
+	SUM(NetPrepaidUnits) AS NetPrepaidUnits,
+	SUM(NetPP) AS NetPP,
+	SUM(AccessorySales) AS AccessorySales,
+	SUM(ConnectedDev) AS ConnectedDev,
+	table1.Tenure,
+	table1.RehireTenure, 
+	table1.Active
+
+
+FROM
+	(
+	SELECT 
+		table1.Date,
+		table1.StoreNum,
+		table1.RepId,
+		table1.Rehire,
+		table1.RehireDate,
+		table1.Hours,
+		table1.NetPostpaid,
+		table1.NetPrepaidACTs,
+		table1.NetPrepaidUnits,
+		table1.NetPP,
+		table1.AccessorySales,
+		table1.ConnectedDev,
+	
+
+		CASE WHEN table1.Rehire = 0 THEN  DATEDIFF(DAY, table1.FirstDateWorked, table1.LastDateWorked) 
+			ELSE NULL END AS Tenure,
+		CASE WHEN table1.Rehire = 1 THEN DATEDIFF(DAY, table1.RehireDate, table1.LastDateWorked) 
+			ELSE NULL END AS RehireTenure,
+		CASE WHEN table1.LastDateWorked >= GETDATE() - 21 THEN 1
+			ELSE 0 END AS Active
+
+	FROM 
+		(
+		SELECT 
+			table1.Date,
+			table1.StoreNum,
+			table1.RepId,
+			CASE WHEN table2.RehireDate <= table1.Date THEN 1
+				ELSE 0 END AS Rehire,
+			table2.RehireDate,
+			table1.Hours,
+			table1.NetPostpaid,
+			table1.NetPrepaidACTs,
+			table1.NetPrepaidUnits,
+			table1.NetPP,
+			table1.AccessorySales,
+			table1.ConnectedDev, 
+			table3.FirstDateWorked,
+			table3.LastDateWorked
+
+
+		FROM
+			(
+			SELECT 
+				table1.Date,
+				table1.StoreNum,
+				table1.RepId,
+				MAX(table1.ActualHours) AS Hours, 
+				SUM(table1.NetPostPaid) AS NetPostpaid,
+				SUM(table1.NetPrePaidACTs) AS NetPrepaidACTs, 
+				SUM(table1.NetPrePaidUnits) AS NetPrepaidUnits,
+				SUM(table1.NetPP) AS NetPP,
+				SUM(table1.AccessorySales) AS AccessorySales, 
+				SUM(ConnectedDev) AS ConnectedDev
+
+			FROM 
+				(
+				SELECT DISTINCT 
+					CONVERT(DATE, wt.ActivityDate, 11) AS Date,
+					wt.StoreNum,
+					table1.ActualHours,
+					wt.repid AS RepId, 
+	
+					CASE WHEN wt.NetPostpaidIncBYOD IS NULL THEN 0 ELSE
+						wt.NetPostpaidIncBYOD END AS NetPostPaid, 
+					CASE WHEN wt.NetPrePaidActivations IS NULL THEN 0 ELSE
+						wt.NetPrePaidActivations END AS NetPrePaidACTs,
+					CASE WHEN wt.PrePaidUnits IS NULL THEN 0 ELSE
+						wt.PrePaidUnits END AS NetPrePaidUnits,
+					CASE WHEN wt.TotalProtectionPlanUnits IS NULL THEN 0 ELSE
+						wt.TotalProtectionPlanUnits END AS NetPP,
+					CASE WHEN wt.AccessorySales IS NULL THEN 0 ELSE
+						wt.AccessorySales END AS AccessorySales,
+					CASE WHEN wt.ConnectedDeviceAccount IS NULL THEN 0 ELSE
+						wt.ConnectedDeviceAccount END AS ConnectedDev
+
+				FROM WalmartWSP.dbo.WalmartTransactions wt
+
+
+				INNER JOIN 
+					(
+					SELECT 
+						cc.ActualHours,
+						cc.RepID, 
+						cc.VisitCalendarDate
+					FROM WalmartWSP.dbo.CICO_New cc
+					) AS table1 ON table1.RepID = wt.repid AND CONVERT(DATE, table1.VisitCalendarDate) = CONVERT(DATE, wt.ActivityDate)
+
+				WHERE wt.repid != 3 AND ActualHours != 0
+					) AS table1
+			GROUP BY 
+				Date, 
+				StoreNum, 
+				RepId
+				) AS table1
+		LEFT JOIN 
+			(SELECT TOP(1) WITH TIES 
+				table1.RepId, 
+				table1.RehireDate,
+				RANK() OVER (PARTITION BY RepID ORDER BY RehireDate) AS Rehire
+
+			FROM
+				(
+				SELECT
+					table1.RepID,
+					table1.PreviousDate,
+					table1.Date AS RehireDate, 
+					DATEDIFF(DAY, table1.PreviousDate, table1.Date) AS Interval
+
+				FROM
+					(
+					SELECT
+						table1.RepID,
+						CASE WHEN LAG(table1.RepID, 1) OVER (ORDER BY table1.RepID, table1.Date) = table1.RepID 
+							 THEN LAG(table1.Date, 1) OVER (ORDER BY table1.RepID, table1.Date)
+							 ELSE NULL END AS PreviousDate,
+						table1.Date
+
+					FROM
+						(
+							SELECT DISTINCT 
+								RepId,
+								CONVERT(DATE, ReportDate) AS Date
+							FROM WalmartWSP.dbo.ArchiveRepRoster
+					) AS table1
+					) AS table1
+					) AS table1
+			WHERE Interval >= 21
+			ORDER BY Rehire
+			) AS table2 ON table2.RepId = table1.RepId
+			
+		INNER JOIN 
+			(
+			SELECT DISTINCT 
+				ar.RepId, 
+				MAX(ar.ReportDate) AS LastDateWorked,
+				MIN(ar.ReportDate) AS FirstDateWorked
+
+			FROM WalmartWSP.dbo.ArchiveRepRoster ar
+			GROUP BY ar.RepId
+			) AS table3 ON table1.RepId = table3.RepId
+	) AS table1
+		) AS table1
+	
+	LEFT JOIN 
+		( 
+		SELECT 
+			rr.RepID,
+			rr.SMFlag
+		FROM WalmartWSP.dbo.RepRoster rr
+		WHERE SMFlag = 'Y'
+		) AS table2 ON table2.RepID = table1.RepId
+WHERE SMFlag IS NULL 
+GROUP BY 
+	table1.RepId, 
+	Rehire, 
+	SMFlag,
+	table1.Tenure,
+	table1.RehireTenure, 
+	table1.Active
+ORDER BY RepId, Rehire
